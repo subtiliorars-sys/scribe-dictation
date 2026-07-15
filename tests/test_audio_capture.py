@@ -1,6 +1,5 @@
 """Tests for the audio capture module."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np

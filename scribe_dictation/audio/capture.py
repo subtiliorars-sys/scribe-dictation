@@ -171,7 +171,6 @@ def record_until_silence(
     )
     recorder.start()
 
-    silence_start: Optional[float] = None
     block_duration = 0.1  # seconds per check
     blocks_for_silence = int(silence_duration / block_duration)
     silent_blocks = 0

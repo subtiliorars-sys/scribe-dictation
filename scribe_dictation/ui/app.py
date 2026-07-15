@@ -20,7 +20,7 @@ import threading
 from typing import Optional
 
 import pyperclip
-from PySide6.QtCore import QMetaObject, QSettings, Qt, Slot
+from PySide6.QtCore import Q_ARG, QMetaObject, QSettings, Qt, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
