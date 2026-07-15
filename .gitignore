@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Audio capture temp files
+data/
