@@ -1,0 +1,16 @@
+[project]
+name = "scribe-dictation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.1",
+    "openai>=2.45.0",
+    "pynput>=1.8.2",
+    "pyperclip>=1.11.0",
+    "pyside6>=6.11.1",
+    "requests>=2.34.2",
+    "sounddevice>=0.5.5",
+    "soundfile>=0.14.0",
+]
