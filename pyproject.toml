@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "hypothesis>=6.100.0",
 ]
 
 [project.scripts]
@@ -28,5 +29,6 @@ scribe-dictation = "scribe_dictation.__main__:main"
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "hypothesis>=6.100.0",
 ]
 
