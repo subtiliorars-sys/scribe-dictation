@@ -1,7 +1,7 @@
 [project]
 name = "scribe-dictation"
 version = "0.1.0"
-description = "Add your description here"
+description = "A cross-platform desktop dictation app using OpenAI Whisper"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,3 +14,19 @@ dependencies = [
     "sounddevice>=0.5.5",
     "soundfile>=0.14.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+scribe-dictation = "scribe_dictation.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
