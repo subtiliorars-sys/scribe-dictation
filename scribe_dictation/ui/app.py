@@ -6,7 +6,10 @@ Main window with:
 - Status bar (Idle / Recording... / Transcribing... / Done)
 - Editable text display for transcribed output
 - Copy to clipboard and Clear buttons
-- Settings dialog for microphone device and API key
+- Auto-paste after transcription (configurable)
+- Global hotkey (Ctrl+Shift+D) to toggle recording from any app
+- Settings dialog for microphone device, API key, and auto-paste toggle
+- System tray icon with quick actions
 - Ctrl+R keyboard shortcut to toggle recording
 """
 
@@ -20,10 +23,10 @@ import pyperclip
 from PySide6.QtCore import QMetaObject, QSettings, Qt, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
-    QStatusBar, QVBoxLayout, QWidget,
+    QStatusBar, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 from scribe_dictation.audio.capture import AudioRecorder
@@ -33,6 +36,79 @@ APP_NAME = "Scribe Dictation"
 ORGANIZATION = "ScribeDictation"
 SETTINGS_API_KEY = "api_key"
 SETTINGS_DEVICE = "audio_device"
+SETTINGS_AUTO_PASTE = "auto_paste"
+
+# ── Global hotkey support ─────────────────────────────────────────────
+
+_global_hotkey_listener = None
+
+
+def _start_global_hotkey(callback):
+    """Start a background thread listening for Ctrl+Shift+D global hotkey."""
+    global _global_hotkey_listener
+
+    if _global_hotkey_listener is not None:
+        return
+
+    try:
+        from pynput import keyboard
+    except ImportError:
+        return
+
+    COMBINATION = {keyboard.Key.ctrl, keyboard.Key.shift, keyboard.KeyCode.from_char("d")}
+    current_keys = set()
+
+    def on_press(key):
+        current_keys.add(key)
+        if COMBINATION.issubset(current_keys):
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, callback)
+
+    def on_release(key):
+        try:
+            current_keys.discard(key)
+        except KeyError:
+            pass
+
+    _global_hotkey_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+    _global_hotkey_listener.daemon = True
+    _global_hotkey_listener.start()
+
+
+def _stop_global_hotkey():
+    """Stop the global hotkey listener."""
+    global _global_hotkey_listener
+    if _global_hotkey_listener is not None:
+        _global_hotkey_listener.stop()
+        _global_hotkey_listener = None
+
+
+def _simulate_paste():
+    """Simulate Ctrl+V (Windows) / Cmd+V (macOS) to paste into active window."""
+    try:
+        from pynput.keyboard import Controller, Key
+        kb = Controller()
+        mod = Key.cmd if sys.platform == "darwin" else Key.ctrl
+        kb.press(mod)
+        kb.press(KeyCode.from_vk(86))
+        kb.release(KeyCode.from_vk(86))
+        kb.release(mod)
+    except Exception as e:
+        print(f"Auto-paste failed: {e}")
+
+
+try:
+    from pynput.keyboard import KeyCode as _KC
+    KeyCode = _KC
+except ImportError:
+    class KeyCode:
+        @staticmethod
+        def from_vk(vk):
+            return None
+
+
+# ── Settings Dialog ────────────────────────────────────────────────────
+
 class SettingsDialog(QDialog):
     """Dialog for configuring application settings."""
 
@@ -54,6 +130,12 @@ class SettingsDialog(QDialog):
         self.device_combo = QComboBox()
         self._populate_devices()
         layout.addRow("Microphone:", self.device_combo)
+
+        self.auto_paste_check = QCheckBox("Auto-paste after transcription")
+        self.auto_paste_check.setChecked(
+            self.settings.value(SETTINGS_AUTO_PASTE, "true") == "true"
+        )
+        layout.addRow(self.auto_paste_check)
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -81,6 +163,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue(SETTINGS_API_KEY, self.api_key_input.text())
         device_id = self.device_combo.currentData()
         self.settings.setValue(SETTINGS_DEVICE, str(device_id) if device_id is not None else "")
+        self.settings.setValue(SETTINGS_AUTO_PASTE, "true" if self.auto_paste_check.isChecked() else "false")
         self.accept()
 
 
@@ -88,7 +171,7 @@ class ScribeDictationWindow(QMainWindow):
     """Main application window for Scribe Dictation."""
 
     STATUS_IDLE = "Idle"
-    STATUS_RECORDING = "Recording..."
+    STATUS_RECORDING = "Recording...  (Ctrl+Shift+D to stop)"
     STATUS_TRANSCRIBING = "Transcribing..."
     STATUS_DONE = "Done"
 
@@ -103,6 +186,8 @@ class ScribeDictationWindow(QMainWindow):
 
         self._setup_ui()
         self._setup_shortcuts()
+        self._setup_global_hotkey()
+        self._setup_tray()
         self._setup_transcriber()
         self._update_status(self.STATUS_IDLE)
 
@@ -172,6 +257,49 @@ class ScribeDictationWindow(QMainWindow):
     def _setup_shortcuts(self):
         shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
         shortcut.activated.connect(self._toggle_recording)
+
+    def _setup_global_hotkey(self):
+        """Register Ctrl+Shift+D as a system-wide hotkey."""
+        _start_global_hotkey(self._toggle_recording)
+
+    def _setup_tray(self):
+        """Create a system tray icon with quick actions."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(self.style().standardIcon(
+            self.style().StandardPixmap.SP_ComputerIcon
+        ))
+        self.tray_icon.setToolTip(APP_NAME)
+
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu()
+
+        toggle_action = menu.addAction("Toggle Recording")
+        toggle_action.triggered.connect(self._toggle_recording)
+
+        menu.addSeparator()
+
+        show_action = menu.addAction("Show Window")
+        show_action.triggered.connect(self.show)
+
+        settings_action = menu.addAction("Settings...")
+        settings_action.triggered.connect(self._open_settings)
+
+        menu.addSeparator()
+
+        quit_action = menu.addAction("Quit")
+        quit_action.triggered.connect(self.close)
+
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.show()
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.show()
+            self.raise_()
 
     def _setup_transcriber(self):
         """Initialize the transcription service from settings or env."""
@@ -293,12 +421,20 @@ class ScribeDictationWindow(QMainWindow):
         self.text_display.appendPlainText(text)
         self._update_status(self.STATUS_DONE)
 
+        # Auto-paste if enabled
+        auto_paste = self.settings.value(SETTINGS_AUTO_PASTE, "true") == "true"
+        if auto_paste and text.strip():
+            pyperclip.copy(text)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(200, _simulate_paste)
+
     # ── Actions ───────────────────────────────────────────────────────
 
     def _copy_to_clipboard(self):
         text = self.text_display.toPlainText()
         if text.strip():
             pyperclip.copy(text)
+            self._update_status("Copied!")
 
     def _clear_text(self):
         self.text_display.clear()
@@ -314,10 +450,10 @@ class ScribeDictationWindow(QMainWindow):
             self,
             f"About {APP_NAME}",
             f"<b>{APP_NAME}</b><br><br>"
-            f"Version 0.1.0<br><br>"
+            f"Version 0.2.0<br><br>"
             f"A desktop dictation app using OpenAI Whisper API.<br><br>"
-            f"Press <b>Ctrl+R</b> to start/stop recording.<br>"
-            f"Audio is automatically transcribed when recording stops.",
+            f"Press <b>Ctrl+R</b> or <b>Ctrl+Shift+D</b> (global) to start/stop recording.<br>"
+            f"Auto-paste is configurable in Settings.",
         )
 
     def closeEvent(self, event: QCloseEvent):
@@ -326,6 +462,7 @@ class ScribeDictationWindow(QMainWindow):
                 self._recorder.stop()
             except RuntimeError:
                 pass
+        _stop_global_hotkey()
         event.accept()
 
 
