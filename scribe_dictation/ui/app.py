@@ -21,7 +21,7 @@ from typing import Optional
 
 import pyperclip
 from PySide6.QtCore import Q_ARG, QMetaObject, QSettings, Qt, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout, QLineEdit, QMainWindow,
@@ -95,6 +95,29 @@ def _simulate_paste():
         kb.release(mod)
     except Exception as e:
         print(f"Auto-paste failed: {e}")
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Place ``text`` on the system clipboard.
+
+    Uses PySide6's ``QGuiApplication.clipboard()`` (no extra dependency beyond
+    the existing PySide6 requirement) and falls back to ``pyperclip`` if the Qt
+    clipboard is unavailable. Returns ``True`` when the text was written.
+    """
+    try:
+        clipboard = QGuiApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+            return True
+    except Exception as e:  # pragma: no cover - defensive, depends on platform
+        print(f"Qt clipboard write failed: {e}")
+
+    try:
+        pyperclip.copy(text)
+        return True
+    except Exception as e:  # pragma: no cover - defensive, depends on platform
+        print(f"pyperclip clipboard write failed: {e}")
+        return False
 
 
 try:
@@ -217,7 +240,7 @@ class ScribeDictationWindow(QMainWindow):
         btn_layout.addWidget(self.record_btn)
 
         self.copy_btn = QPushButton("\U0001f4cb Copy")
-        self.copy_btn.clicked.connect(self._copy_to_clipboard)
+        self.copy_btn.clicked.connect(self._copy_to_clipboard_action)
         btn_layout.addWidget(self.copy_btn)
 
         self.clear_btn = QPushButton("\U0001f5d1 Clear")
@@ -421,19 +444,24 @@ class ScribeDictationWindow(QMainWindow):
         self.text_display.appendPlainText(text)
         self._update_status(self.STATUS_DONE)
 
-        # Auto-paste if enabled
-        auto_paste = self.settings.value(SETTINGS_AUTO_PASTE, "true") == "true"
-        if auto_paste and text.strip():
-            pyperclip.copy(text)
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(200, _simulate_paste)
+        # Always place the result on the clipboard so the user can paste with
+        # Ctrl+V even when automatic pasting is disabled.
+        if text.strip():
+            _copy_to_clipboard(text)
+
+            # Auto-paste (simulate Ctrl+V into the previously-active window) is
+            # an optional, toggleable behaviour gated by the "auto_paste" setting.
+            auto_paste = self.settings.value(SETTINGS_AUTO_PASTE, "true") == "true"
+            if auto_paste:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(200, _simulate_paste)
 
     # ── Actions ───────────────────────────────────────────────────────
 
-    def _copy_to_clipboard(self):
+    def _copy_to_clipboard_action(self):
         text = self.text_display.toPlainText()
         if text.strip():
-            pyperclip.copy(text)
+            _copy_to_clipboard(text)
             self._update_status("Copied!")
 
     def _clear_text(self):
