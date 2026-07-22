@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from scribe_dictation.audio.capture import AudioRecorder
+from scribe_dictation.audio.devices import list_input_devices, resolve_device_index
 from scribe_dictation.transcribe.service import TranscribeService
 
 APP_NAME = "Scribe Dictation"
@@ -168,24 +169,23 @@ class SettingsDialog(QDialog):
         layout.addRow(button_box)
 
     def _populate_devices(self):
-        import sounddevice as sd
+        # Persisted selection is a stable id ("name::hostapi"), not an index —
+        # indices shift across runs and when devices are plugged/unplugged.
         saved_device = self.settings.value(SETTINGS_DEVICE, "")
-        self.device_combo.addItem("Default", None)
+        self.device_combo.addItem("Default", "")
         try:
-            devices = sd.query_devices()
-            for i, dev in enumerate(devices):
-                if dev["max_input_channels"] > 0:
-                    label = f"{dev['name']} (API: {dev['hostapi']})"
-                    self.device_combo.addItem(label, i)
-                    if saved_device and (str(i) == saved_device or dev["name"] == saved_device):
-                        self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
+            devices = list_input_devices()
+            for dev in devices:
+                self.device_combo.addItem(dev.display_name, dev.stable_id)
+                if saved_device and dev.stable_id == saved_device:
+                    self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
         except Exception:
             pass
 
     def _save(self):
         self.settings.setValue(SETTINGS_API_KEY, self.api_key_input.text())
-        device_id = self.device_combo.currentData()
-        self.settings.setValue(SETTINGS_DEVICE, str(device_id) if device_id is not None else "")
+        stable_id = self.device_combo.currentData()
+        self.settings.setValue(SETTINGS_DEVICE, stable_id or "")
         self.settings.setValue(SETTINGS_AUTO_PASTE, "true" if self.auto_paste_check.isChecked() else "false")
         self.accept()
 
@@ -349,8 +349,12 @@ class ScribeDictationWindow(QMainWindow):
             self._start_recording()
 
     def _start_recording(self):
-        device_str = self.settings.value(SETTINGS_DEVICE, "")
-        device = int(device_str) if device_str and device_str != "None" else None
+        stable_id = self.settings.value(SETTINGS_DEVICE, "")
+        # Resolve the persisted stable id to a *current* device index. If the
+        # previously-selected device is no longer present (unplugged, driver
+        # change, etc.), this returns None and we transparently fall back to
+        # the system default input device instead of crashing.
+        device = resolve_device_index(stable_id)
 
         self._recorder = AudioRecorder(device=device)
         self._recorder.start()
