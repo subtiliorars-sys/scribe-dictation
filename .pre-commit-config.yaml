@@ -24,3 +24,15 @@ repos:
     hooks:
       - id: gitleaks
         args: [--verbose]
+
+  # Ecosystem git-guards convention (ported from Cairn's/CodeMonkeys'
+  # .githooks/pre-push.d/20-brand-lint): block sibling-brand / program-
+  # affiliation strings on this repo's docs surface. See scripts/brand_lint.py
+  # and .githooks/brand-wordlist.txt.
+  - repo: local
+    hooks:
+      - id: brand-lint
+        name: brand / program-affiliation lint
+        entry: python scripts/brand_lint.py
+        language: system
+        pass_filenames: true

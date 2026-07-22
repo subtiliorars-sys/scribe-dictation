@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#
+# .githooks/pre-commit — bridge script.
+#
+# This repo's core.hooksPath is set to .githooks (the ecosystem convention:
+# a checked-in hooks dir shared by every clone, auto-enabled per clone rather
+# than relying on each contributor remembering `pre-commit install`, which
+# writes into the gitignored .git/hooks/ and would silently no-op otherwise).
+#
+# Unlike sibling repos (Cairn, CodeMonkeys) which implement the checks as raw
+# bash scripts dispatched from .githooks/pre-commit.d/, this repo already
+# standardized on the `pre-commit` framework (.pre-commit-config.yaml: ruff
+# format/lint, gitleaks secret-scan, detect-private-key, brand-lint — see
+# CONTRIBUTING.md). So instead of porting the bash dispatcher verbatim, this
+# script just bridges core.hooksPath to that existing config.
+#
+# Bypass: git commit --no-verify
+#
+set -uo pipefail
+
+if command -v pre-commit >/dev/null 2>&1; then
+  exec pre-commit run --hook-stage pre-commit
+fi
+
+echo "" >&2
+echo "⚠️  pre-commit is not installed — hooks (format check, secret scan," >&2
+echo "    brand lint) were SKIPPED for this commit." >&2
+echo "    Install: pip install pre-commit  (or: uv tool install pre-commit)" >&2
+echo "" >&2
+exit 0

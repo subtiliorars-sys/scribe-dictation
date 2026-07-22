@@ -1,0 +1,29 @@
+# Brand / program-affiliation lint wordlist (ecosystem git-guards convention,
+# ported from Cairn's .githooks/brand-wordlist.txt).
+# Matched WHOLE-WORD and CASE-INSENSITIVE against tracked files by
+# scripts/brand_lint.py (wired into .pre-commit-config.yaml).
+# One pattern per line; lines starting with '#' are ignored. Patterns are
+# extended regex, but plain strings work fine.
+#
+# Goal: this repo's public-facing files (README, CONTRIBUTING, docs) must
+# imply no affiliation with AA or any 12-step program, and must not
+# cross-promote a sibling brand from the same owner's portfolio.
+#
+# !!! This repo's own name ("Scribe Dictation" / "scribe-dictation") is
+#     intentionally NOT listed below — do not add it, it would match itself
+#     on every commit.
+#
+# --- program-affiliation terms ---
+Alcoholics Anonymous
+the program
+AA
+#
+# --- cross-portfolio brand names (siblings from the same owner) ---
+Cairn
+MeniscusMaximus
+Meniscus Maximus
+OmniTender
+omni-herald
+CodeMonkeys
+infinite-banking
+Ilerioluwa
