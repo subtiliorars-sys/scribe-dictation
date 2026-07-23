@@ -1,0 +1,7 @@
+# brand-lint scan paths (one per line; '#' = comment).
+# scribe-dictation's PUBLIC surface = README.md (what a visitor to the repo
+# sees first). Mirrors Cairn's public/internal split (site/ scanned,
+# README/docs/ out of scope): internal dev docs here (CONTRIBUTING.md,
+# CHANGELOG.md, START_HERE.md) legitimately reference sibling repos/tools by
+# name when explaining ecosystem conventions, so they are NOT scanned.
+README.md

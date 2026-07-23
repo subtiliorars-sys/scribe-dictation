@@ -17,6 +17,7 @@ import asyncio
 import os
 import sys
 import threading
+import time
 from typing import Optional
 
 import pyperclip
@@ -24,13 +25,13 @@ from PySide6.QtCore import Q_ARG, QMetaObject, QSettings, Qt, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFormLayout, QHBoxLayout, QLineEdit, QMainWindow,
+    QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
     QStatusBar, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 from scribe_dictation.audio.capture import AudioRecorder
-from scribe_dictation.audio.devices import list_input_devices, resolve_device_index
+from scribe_dictation.export import Segment, TranscriptionResult, to_markdown, to_srt, to_txt
 from scribe_dictation.transcribe.service import TranscribeService
 
 APP_NAME = "Scribe Dictation"
@@ -169,23 +170,24 @@ class SettingsDialog(QDialog):
         layout.addRow(button_box)
 
     def _populate_devices(self):
-        # Persisted selection is a stable id ("name::hostapi"), not an index —
-        # indices shift across runs and when devices are plugged/unplugged.
+        import sounddevice as sd
         saved_device = self.settings.value(SETTINGS_DEVICE, "")
-        self.device_combo.addItem("Default", "")
+        self.device_combo.addItem("Default", None)
         try:
-            devices = list_input_devices()
-            for dev in devices:
-                self.device_combo.addItem(dev.display_name, dev.stable_id)
-                if saved_device and dev.stable_id == saved_device:
-                    self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
+            devices = sd.query_devices()
+            for i, dev in enumerate(devices):
+                if dev["max_input_channels"] > 0:
+                    label = f"{dev['name']} (API: {dev['hostapi']})"
+                    self.device_combo.addItem(label, i)
+                    if saved_device and (str(i) == saved_device or dev["name"] == saved_device):
+                        self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
         except Exception:
             pass
 
     def _save(self):
         self.settings.setValue(SETTINGS_API_KEY, self.api_key_input.text())
-        stable_id = self.device_combo.currentData()
-        self.settings.setValue(SETTINGS_DEVICE, stable_id or "")
+        device_id = self.device_combo.currentData()
+        self.settings.setValue(SETTINGS_DEVICE, str(device_id) if device_id is not None else "")
         self.settings.setValue(SETTINGS_AUTO_PASTE, "true" if self.auto_paste_check.isChecked() else "false")
         self.accept()
 
@@ -206,6 +208,13 @@ class ScribeDictationWindow(QMainWindow):
         self.settings = QSettings(ORGANIZATION, APP_NAME)
         self._recorder: Optional[AudioRecorder] = None
         self._transcriber: Optional[TranscribeService] = None
+
+        # Segments accumulated across recordings in this session, used for
+        # Export. Each recording becomes one timestamped segment, with start
+        # measured from the first recording in the session.
+        self._session_started_at: Optional[float] = None
+        self._segments: list = []
+        self._recording_started_at: Optional[float] = None
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -264,6 +273,13 @@ class ScribeDictationWindow(QMainWindow):
         settings_action.setShortcut(QKeySequence("Ctrl+,"))
         settings_action.triggered.connect(self._open_settings)
         file_menu.addAction(settings_action)
+
+        file_menu.addSeparator()
+
+        export_action = QAction("&Export...", self)
+        export_action.setShortcut(QKeySequence("Ctrl+E"))
+        export_action.triggered.connect(self._export_transcription)
+        file_menu.addAction(export_action)
 
         file_menu.addSeparator()
 
@@ -349,12 +365,12 @@ class ScribeDictationWindow(QMainWindow):
             self._start_recording()
 
     def _start_recording(self):
-        stable_id = self.settings.value(SETTINGS_DEVICE, "")
-        # Resolve the persisted stable id to a *current* device index. If the
-        # previously-selected device is no longer present (unplugged, driver
-        # change, etc.), this returns None and we transparently fall back to
-        # the system default input device instead of crashing.
-        device = resolve_device_index(stable_id)
+        device_str = self.settings.value(SETTINGS_DEVICE, "")
+        device = int(device_str) if device_str and device_str != "None" else None
+
+        if self._session_started_at is None:
+            self._session_started_at = time.monotonic()
+        self._recording_started_at = time.monotonic()
 
         self._recorder = AudioRecorder(device=device)
         self._recorder.start()
@@ -448,6 +464,15 @@ class ScribeDictationWindow(QMainWindow):
         self.text_display.appendPlainText(text)
         self._update_status(self.STATUS_DONE)
 
+        # Record this recording as a timestamped segment (relative to the
+        # start of the session) so it can be included in Export output.
+        if text.strip():
+            now = time.monotonic()
+            session_start = self._session_started_at or now
+            seg_start = (self._recording_started_at or now) - session_start
+            seg_end = now - session_start
+            self._segments.append(Segment(start=max(seg_start, 0.0), end=max(seg_end, seg_start, 0.0), text=text))
+
         # Always place the result on the clipboard so the user can paste with
         # Ctrl+V even when automatic pasting is disabled.
         if text.strip():
@@ -470,7 +495,47 @@ class ScribeDictationWindow(QMainWindow):
 
     def _clear_text(self):
         self.text_display.clear()
+        self._segments = []
+        self._session_started_at = None
         self._update_status(self.STATUS_IDLE)
+
+    def _export_transcription(self):
+        """Export the current transcription to .txt, .md, or .srt."""
+        segments = list(self._segments)
+        if not segments:
+            # Fall back to whatever plain text is on screen (e.g. manually
+            # edited), as a single zero-length segment, so Export still
+            # works even if no recording has completed in this session.
+            text = self.text_display.toPlainText()
+            if not text.strip():
+                QMessageBox.information(self, "Export", "Nothing to export yet.")
+                return
+            segments = [Segment(start=0.0, end=0.0, text=text)]
+
+        result = TranscriptionResult(segments=segments)
+
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Transcription",
+            "transcription.txt",
+            "Plain Text (*.txt);;Markdown (*.md);;SubRip Subtitle (*.srt)",
+        )
+        if not path:
+            return
+
+        if path.endswith(".md") or "Markdown" in selected_filter:
+            content = to_markdown(result)
+        elif path.endswith(".srt") or "SubRip" in selected_filter:
+            content = to_srt(result)
+        else:
+            content = to_txt(result)
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            self._update_status(f"Exported to {path}")
+        except OSError as e:
+            QMessageBox.warning(self, "Export failed", f"Could not write file:\n{e}")
 
     def _open_settings(self):
         dialog = SettingsDialog(self)
