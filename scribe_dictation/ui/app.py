@@ -62,6 +62,7 @@ SETTINGS_DEVICE = "audio_device"
 SETTINGS_AUTO_PASTE = "auto_paste"
 SETTINGS_USE_LOCAL = "use_local"
 SETTINGS_LOCAL_MODEL_SIZE = "local_model_size"
+SETTINGS_VOICE_LEARNING = "voice_learning_enabled"
 SETTINGS_PLAY_SOUNDS = "play_sounds"
 
 # ── Global hotkey support ─────────────────────────────────────────────
@@ -71,25 +72,26 @@ _global_hotkey_listener = None
 # Default hotkey configuration - Ctrl+Win is the default, reliable non-text hotkey
 DEFAULT_GLOBAL_HOTKEY = "Ctrl + Win"
 SUPPORTED_HOTKEYS = [
-    "Ctrl + Win",      # Default: modifier-only, no character output
-    "Ctrl + Alt",      # Clean modifier pair
-    "Ctrl + Shift",    # Clean modifier pair
-    "Alt + Shift",     # Clean modifier pair
-    "Ctrl + Space",    # Common dictation / trigger key
-    "Shift + Space",   # Alternate space combination
-    "F1",              # Dedicated Function Key
-    "F8",              # Dedicated Function Key
-    "F9",              # Dedicated Function Key
-    "F10",             # Dedicated Function Key
-    "F11",             # Dedicated Function Key
-    "F12",             # Dedicated Function Key
-    "Caps Lock",       # Single toggle key
+    "Ctrl + Win",  # Default: modifier-only, no character output
+    "Ctrl + Alt",  # Clean modifier pair
+    "Ctrl + Shift",  # Clean modifier pair
+    "Alt + Shift",  # Clean modifier pair
+    "Ctrl + Space",  # Common dictation / trigger key
+    "Shift + Space",  # Alternate space combination
+    "F1",  # Dedicated Function Key
+    "F8",  # Dedicated Function Key
+    "F9",  # Dedicated Function Key
+    "F10",  # Dedicated Function Key
+    "F11",  # Dedicated Function Key
+    "F12",  # Dedicated Function Key
+    "Caps Lock",  # Single toggle key
 ]
 
 
 # Pre-cached in-memory WAV byte buffers for instantaneous zero-latency playback
 _TAPE_PRESS_WAV = None
 _TAPE_RELEASE_WAV = None
+
 
 def _get_tape_sounds():
     """Synthesize authentic, punchy tape-recorder physical button click/clunk sounds."""
@@ -178,8 +180,10 @@ def _play_sound(start: bool):
             return
 
         import sys
+
         if sys.platform == "win32":
             import winsound
+
             press_wav, rel_wav = _get_tape_sounds()
             data = press_wav if start else rel_wav
             winsound.PlaySound(data, winsound.SND_MEMORY | winsound.SND_ASYNC)
@@ -190,6 +194,7 @@ def _play_sound(start: bool):
 def _is_hotkey_match(hotkey_type, current_keys, key=None):
     """Check if the current key combination matches the configured hotkey."""
     from pynput import keyboard
+
     if hotkey_type == "Ctrl + Win":
         return keyboard.Key.ctrl in current_keys and keyboard.Key.cmd in current_keys
     elif hotkey_type == "Ctrl + Alt":
@@ -316,10 +321,12 @@ def _stop_global_hotkey():
 
 _last_paste_time = 0.0
 
+
 def _simulate_paste(target_hwnd: Optional[int] = None):
     """Simulate atomic Ctrl+V (Windows/Linux) / Cmd+V (macOS) to paste into active window."""
     global _last_paste_time
     import time
+
     now = time.monotonic()
     # Debounce paste simulation within 200ms
     if now - _last_paste_time < 0.2:
@@ -339,7 +346,7 @@ def _simulate_paste(target_hwnd: Optional[int] = None):
 
             VK_SHIFT = 0x10
             VK_CONTROL = 0x11
-            VK_MENU = 0x12   # Alt
+            VK_MENU = 0x12  # Alt
             VK_LWIN = 0x5B
             VK_RWIN = 0x5C
             VK_V = 0x56
@@ -402,16 +409,16 @@ def _simulate_paste(target_hwnd: Optional[int] = None):
             return
 
         from pynput.keyboard import Controller, Key
+
         kb = Controller()
         mod = Key.cmd if sys.platform == "darwin" else Key.ctrl
         kb.press(mod)
-        kb.press('v')
+        kb.press("v")
         time.sleep(0.02)
-        kb.release('v')
+        kb.release("v")
         kb.release(mod)
     except Exception as e:
         print(f"Auto-paste failed: {e}")
-
 
 
 def _copy_to_clipboard(text: str) -> bool:
@@ -504,6 +511,30 @@ class SettingsDialog(QDialog):
         )
         layout.addRow(self.play_sounds_check)
 
+        # Voice profile (Pro/Lifetime only) — learns the user's vocabulary
+        # locally and biases future transcriptions toward it.
+        from scribe_dictation.licensing import LicenseTier, get_active_license_tier
+
+        tier = get_active_license_tier()
+        self.voice_learning_check = QCheckBox(
+            "Learn my vocabulary to improve accuracy"
+            if tier.at_least(LicenseTier.PRO)
+            else "Learn my vocabulary to improve accuracy (Pro/Lifetime)"
+        )
+        self.voice_learning_check.setChecked(
+            tier.at_least(LicenseTier.PRO)
+            and self.settings.value(SETTINGS_VOICE_LEARNING, "false") == "true"
+        )
+        self.voice_learning_check.setEnabled(tier.at_least(LicenseTier.PRO))
+        self.voice_learning_check.setToolTip(
+            "100% local: tracks distinctive words across your own dictations "
+            "(names, jargon) and hints the model with them. Nothing leaves "
+            "this machine."
+            if tier.at_least(LicenseTier.PRO)
+            else "Upgrade to Pro or Lifetime to unlock this feature."
+        )
+        layout.addRow(self.voice_learning_check)
+
         # Global Hotkey Selection
         self.hotkey_combo = QComboBox()
         for hk in SUPPORTED_HOTKEYS:
@@ -563,6 +594,10 @@ class SettingsDialog(QDialog):
         device_id = self.device_combo.currentData()
         self.settings.setValue(
             SETTINGS_DEVICE, str(device_id) if device_id is not None else ""
+        )
+        self.settings.setValue(
+            SETTINGS_VOICE_LEARNING,
+            "true" if self.voice_learning_check.isChecked() else "false",
         )
         self.settings.setValue(
             SETTINGS_AUTO_PASTE,
@@ -816,9 +851,24 @@ class ScribeDictationWindow(QMainWindow):
             "OPENAI_API_KEY", ""
         )
 
+        voice_profile = None
+        if self.settings.value(SETTINGS_VOICE_LEARNING, "false") == "true":
+            from scribe_dictation.licensing import LicenseTier, get_active_license_tier
+            from scribe_dictation.transcribe.voice_profile import (
+                VoiceProfile,
+                default_profile_path,
+            )
+
+            tier = get_active_license_tier()
+            if tier.at_least(LicenseTier.PRO):
+                voice_profile = VoiceProfile(default_profile_path(), tier=tier)
+
         try:
             self._transcriber = TranscribeService(
-                api_key=api_key, use_local=use_local, local_model_size=local_model_size
+                api_key=api_key,
+                use_local=use_local,
+                local_model_size=local_model_size,
+                voice_profile=voice_profile,
             )
         except Exception as e:
             print(f"Failed to setup transcriber: {e}")
@@ -850,9 +900,12 @@ class ScribeDictationWindow(QMainWindow):
         if sys.platform == "win32":
             try:
                 import ctypes
+
                 fg = ctypes.windll.user32.GetForegroundWindow()
                 scribe_hwnd = int(self.winId()) if self.isVisible() else 0
-                capsule_hwnd = int(self.capsule.winId()) if self.capsule.isVisible() else 0
+                capsule_hwnd = (
+                    int(self.capsule.winId()) if self.capsule.isVisible() else 0
+                )
                 if fg and fg not in (scribe_hwnd, capsule_hwnd):
                     self._target_hwnd = fg
             except Exception:
@@ -1003,6 +1056,7 @@ class ScribeDictationWindow(QMainWindow):
         if auto_paste:
             target_hwnd = getattr(self, "_target_hwnd", None)
             from PySide6.QtCore import QTimer
+
             QTimer.singleShot(150, lambda: _simulate_paste(target_hwnd))
 
     # ── Actions ───────────────────────────────────────────────────────
