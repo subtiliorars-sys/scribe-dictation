@@ -6,17 +6,62 @@ Two-tier: (1) self-signed offline key verification (legacy), and
 
 Both share the same activation cache + UI.
 """
+
 import hashlib
 import hmac
 import json
-import platform
 import secrets
-import uuid
+from enum import Enum
 
 from PySide6.QtCore import QSettings
 
 from scribe_dictation.licensing.service import LicenseService
 from scribe_dictation.licensing.hardware import get_machine_fingerprint
+
+
+class LicenseTier(Enum):
+    """Purchase tier. LIFETIME costs more up front (one-time) and unlocks
+    everything PRO does, plus tier-gated features like an unbounded voice
+    profile. Derived from the cached ``license_type`` string (the Gumroad
+    product/variant name), so selling a new tier is a Gumroad-side change —
+    no new key format needed."""
+
+    FREE = 0
+    PRO = 1
+    LIFETIME = 2
+
+    def at_least(self, other: "LicenseTier") -> bool:
+        return self.value >= other.value
+
+
+def get_active_license_tier() -> LicenseTier:
+    """Determine the active tier from the cached activation, entirely offline.
+
+    Falls back to the legacy self-signed cache (PRO, no lifetime distinction)
+    when there's no v2 cache, so old keys keep working.
+    """
+    settings = QSettings(ORGANIZATION, APP_NAME)
+
+    raw_v2 = settings.value("license_cache_v2", "")
+    if raw_v2:
+        try:
+            cache = json.loads(raw_v2)
+        except (TypeError, ValueError):
+            cache = {}
+        valid, _reason = LicenseService.validate_cached_activation(
+            cache, get_machine_fingerprint()
+        )
+        if valid:
+            license_type = str(cache.get("license_type", "")).lower()
+            if "lifetime" in license_type:
+                return LicenseTier.LIFETIME
+            return LicenseTier.PRO
+
+    if is_offline_cache_valid():
+        return LicenseTier.PRO
+
+    return LicenseTier.FREE
+
 
 # ── Legacy self-signed constants ──────────────────────────
 ORGANIZATION = "ScribeDictation"
@@ -109,8 +154,18 @@ def deactivate_license():
 
 
 __all__ = [
-    "LicenseService", "get_machine_fingerprint",
-    "is_offline_cache_valid", "verify_license_online", "verify_license_key",
-    "generate_license_key", "cache_activation", "cache_activation_v2",
-    "deactivate_license", "BUY_URL", "ORGANIZATION", "APP_NAME",
+    "LicenseService",
+    "get_machine_fingerprint",
+    "is_offline_cache_valid",
+    "verify_license_online",
+    "verify_license_key",
+    "generate_license_key",
+    "cache_activation",
+    "cache_activation_v2",
+    "deactivate_license",
+    "BUY_URL",
+    "ORGANIZATION",
+    "APP_NAME",
+    "LicenseTier",
+    "get_active_license_tier",
 ]

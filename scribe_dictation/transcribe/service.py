@@ -13,6 +13,8 @@ from typing import Optional
 
 from openai import AsyncOpenAI
 
+from scribe_dictation.transcribe.voice_profile import VoiceProfile
+
 DEFAULT_MODEL = "whisper-1"
 DEFAULT_LOCAL_MODEL = "base"
 MAX_RETRIES = 2
@@ -36,6 +38,7 @@ class TranscribeService:
         local_model_size: str = DEFAULT_LOCAL_MODEL,
         local_device: str = "auto",
         local_compute_type: str = "default",
+        voice_profile: Optional[VoiceProfile] = None,
     ):
         self.use_local = use_local
         self.model = model
@@ -43,6 +46,10 @@ class TranscribeService:
         self.local_device = local_device
         self.local_compute_type = local_compute_type
         self._local_model = None
+        # Pro/Lifetime feature: biases decoding toward the user's learned
+        # vocabulary and records new transcripts back into it. None (the
+        # default) disables it entirely — see voice_profile.py.
+        self.voice_profile = voice_profile
 
         if not self.use_local:
             self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -96,14 +103,23 @@ class TranscribeService:
         if not path.exists():
             raise TranscriptionError(f"Audio file not found: {audio_path}")
 
+        initial_prompt = (
+            self.voice_profile.bias_prompt() if self.voice_profile else None
+        )
+
         if self.use_local:
             try:
                 # Local transcription uses faster-whisper
                 self._init_local_model()
                 # Run the transcription
-                segments, info = self._local_model.transcribe(audio_path, beam_size=5)
+                segments, info = self._local_model.transcribe(
+                    audio_path, beam_size=5, initial_prompt=initial_prompt
+                )
                 text_list = [segment.text for segment in segments]
-                return "".join(text_list).strip()
+                result = "".join(text_list).strip()
+                if self.voice_profile:
+                    self.voice_profile.observe(result)
+                return result
             except Exception as e:
                 print(f"Local transcription failed: {e}")
                 return f"[Local transcription failed: {e}]"
@@ -119,7 +135,10 @@ class TranscribeService:
                     transcript = await self._client.audio.transcriptions.create(
                         model=self.model,
                         file=audio_file,
+                        prompt=initial_prompt or "",
                     )
+                if self.voice_profile:
+                    self.voice_profile.observe(transcript.text)
                 return transcript.text
 
             except Exception as e:
