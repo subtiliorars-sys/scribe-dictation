@@ -108,32 +108,28 @@ def _generate_wav(samples: List[float], sample_rate: int = 44100) -> bytes:
 
 
 def _synth_classic_beep() -> Tuple[bytes, bytes]:
-    """Classic 1200Hz start / 850Hz stop clean sine beeps."""
+    """Classic clean sine beeps with warm presence (rising start / falling stop)."""
     sample_rate = 44100
-    dur = 0.035
+    dur = 0.085
     n_samples = int(dur * sample_rate)
 
-    # Start: 1200Hz
+    # Start: High, cheerful 1050Hz -> 1250Hz rising confirmation beep
     start_samples = [0.0] * n_samples
     for i in range(n_samples):
         t = i / sample_rate
-        env = (
-            (1.0 - math.cos(math.pi * min(1.0, t / 0.004))) * 0.5
-            if t < 0.004
-            else math.exp(-(t - 0.004) * 80.0)
-        )
-        start_samples[i] = math.sin(2 * math.pi * 1200 * t) * env * 0.65
+        attack = min(1.0, t / 0.006)
+        decay = math.exp(-t * 35.0)
+        freq = 1050.0 + 200.0 * (t / dur)
+        start_samples[i] = math.sin(2 * math.pi * freq * t) * attack * decay * 0.85
 
-    # Stop: 850Hz
+    # Stop: Lower, warm 680Hz -> 520Hz grounding boop
     stop_samples = [0.0] * n_samples
     for i in range(n_samples):
         t = i / sample_rate
-        env = (
-            (1.0 - math.cos(math.pi * min(1.0, t / 0.004))) * 0.5
-            if t < 0.004
-            else math.exp(-(t - 0.004) * 75.0)
-        )
-        stop_samples[i] = math.sin(2 * math.pi * 850 * t) * env * 0.65
+        attack = min(1.0, t / 0.006)
+        decay = math.exp(-t * 32.0)
+        freq = 680.0 - 160.0 * (t / dur)
+        stop_samples[i] = math.sin(2 * math.pi * freq * t) * attack * decay * 0.85
 
     return _generate_wav(start_samples, sample_rate), _generate_wav(
         stop_samples, sample_rate
@@ -145,27 +141,27 @@ def _synth_subtle_tick() -> Tuple[bytes, bytes]:
     sample_rate = 44100
     rng = random.Random(101)
 
-    # Start: 16ms crisp 1800Hz transient click
-    dur_start = 0.016
+    # Start: 35ms crisp 1600Hz transient click with solid mechanical presence
+    dur_start = 0.035
     n_start = int(dur_start * sample_rate)
     start_samples = [0.0] * n_start
     for i in range(n_start):
         t = i / sample_rate
-        env = math.exp(-t * 350.0)
+        env = math.exp(-t * 140.0)
         noise = (rng.random() * 2 - 1) * env * 0.35
-        tone = math.sin(2 * math.pi * 1800 * t) * env * 0.65
-        start_samples[i] = noise + tone
+        tone = math.sin(2 * math.pi * 1600 * t) * env * 0.65
+        start_samples[i] = (noise + tone) * 0.85
 
-    # Stop: 20ms subtle 580Hz wooden tactile tap
-    dur_stop = 0.020
+    # Stop: 40ms subtle 520Hz wooden tactile tap
+    dur_stop = 0.040
     n_stop = int(dur_stop * sample_rate)
     stop_samples = [0.0] * n_stop
     for i in range(n_stop):
         t = i / sample_rate
-        env = math.exp(-t * 220.0)
-        thud = math.sin(2 * math.pi * 580 * t) * env * 0.7
+        env = math.exp(-t * 110.0)
+        thud = math.sin(2 * math.pi * 520 * t) * env * 0.7
         body = math.sin(2 * math.pi * 180 * t) * env * 0.3
-        stop_samples[i] = thud + body
+        stop_samples[i] = (thud + body) * 0.85
 
     return _generate_wav(start_samples, sample_rate), _generate_wav(
         stop_samples, sample_rate
@@ -966,8 +962,105 @@ def _play_wav_buffer_win32(wav_bytes: bytes):
     threading.Thread(target=_blocking_play, daemon=True).start()
 
 
+def _get_sounddevice_output_target() -> Tuple[Optional[int], int]:
+    """Find the optimal output device and native hardware sample rate for low-latency playback."""
+    try:
+        import sounddevice as sd
+
+        # 1. On Windows, explicitly prioritize WASAPI then DirectSound over legacy MME
+        if sys.platform == "win32":
+            for h in sd.query_hostapis():
+                if (
+                    "WASAPI" in h.get("name", "")
+                    and h.get("default_output_device", -1) >= 0
+                ):
+                    dev_idx = h["default_output_device"]
+                    info = sd.query_devices(dev_idx)
+                    if info.get("max_output_channels", 0) > 0:
+                        return dev_idx, int(info.get("default_samplerate", 44100))
+
+            for h in sd.query_hostapis():
+                if (
+                    "DirectSound" in h.get("name", "")
+                    and h.get("default_output_device", -1) >= 0
+                ):
+                    dev_idx = h["default_output_device"]
+                    info = sd.query_devices(dev_idx)
+                    if info.get("max_output_channels", 0) > 0:
+                        return dev_idx, int(info.get("default_samplerate", 44100))
+
+        # 2. Standard default output device (macOS CoreAudio, Linux ALSA/Pulse, or default)
+        default_out = sd.default.device[1]
+        if default_out is not None and default_out >= 0:
+            info = sd.query_devices(default_out)
+            return default_out, int(info.get("default_samplerate", 44100))
+    except Exception:
+        pass
+    return None, 44100
+
+
+def _play_wav_buffer_sounddevice(wav_bytes: bytes) -> bool:
+    """Attempt playback using sounddevice (WASAPI/DirectSound/CoreAudio/Pulse).
+
+    Upmixes mono to stereo so modern multi-channel surround topologies
+    (Nahimic, SteelSeries Sonar, Realtek 7.1) do not drop or isolate the signal.
+    Resamples to the device's native hardware sample rate (e.g. 48kHz on Windows Realtek)
+    so WASAPI shared-mode streams are accepted without PaErrorCode -9997.
+    Prepends a 25ms silence ramp so hardware DACs in power-saving mode have time
+    to wake up and do not swallow short transient clicks.
+    """
+    try:
+        import sounddevice as sd
+        import numpy as np
+
+        with wave.open(io.BytesIO(wav_bytes), "rb") as w:
+            src_sr = w.getframerate()
+            n_channels = w.getnchannels()
+            frames = w.readframes(w.getnframes())
+
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+        dev_idx, target_sr = _get_sounddevice_output_target()
+
+        # Resample if device native rate differs from WAV source rate (e.g. 44.1k -> 48k)
+        if target_sr > 0 and target_sr != src_sr:
+            num_out = int(len(samples) * target_sr / src_sr)
+            if num_out > 0:
+                samples = np.interp(
+                    np.linspace(0, len(samples), num_out, endpoint=False),
+                    np.arange(len(samples)),
+                    samples,
+                )
+            play_sr = target_sr
+        else:
+            play_sr = src_sr
+
+        if n_channels == 1:
+            samples = np.column_stack([samples, samples])
+
+        pad_len = int(0.025 * play_sr)
+        silence = np.zeros((pad_len, 2), dtype=np.float32)
+        samples = np.vstack([silence, samples])
+
+        def _worker():
+            try:
+                sd.play(samples, play_sr, device=dev_idx, blocking=True)
+            except Exception as exc:
+                logger.debug("sounddevice worker playback failed: %s", exc)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+    except Exception as exc:
+        logger.debug("sounddevice playback skipped or failed (%s)", exc)
+        return False
+
+
 def _play_wav_buffer_crossplatform(wav_bytes: bytes):
     """Play WAV buffer across Windows / macOS / Linux."""
+    # 1. Preferred path: sounddevice (high fidelity, low latency, stereo upmix)
+    if _play_wav_buffer_sounddevice(wav_bytes):
+        return
+
     if sys.platform == "win32":
         _play_wav_buffer_win32(wav_bytes)
         return

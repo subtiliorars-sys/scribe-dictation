@@ -127,7 +127,7 @@ class LocalWhisperService:
         self._init_model()
 
         prompt = self.get_initial_prompt(initial_prompt)
-        transcribe_kwargs = {"beam_size": beam_size, **kwargs}
+        transcribe_kwargs = {"beam_size": beam_size, "vad_filter": True, **kwargs}
         if prompt:
             transcribe_kwargs["initial_prompt"] = prompt
 
@@ -193,7 +193,7 @@ class LocalWhisperService:
         self._init_model()
 
         prompt = self.get_initial_prompt(initial_prompt)
-        transcribe_kwargs = {"beam_size": beam_size, **kwargs}
+        transcribe_kwargs = {"beam_size": beam_size, "vad_filter": True, **kwargs}
         if prompt:
             transcribe_kwargs["initial_prompt"] = prompt
 
