@@ -108,6 +108,11 @@ from scribe_dictation.ui.transform_palette import (
     grab_selected_text,
 )
 from scribe_dictation.ui.visualizer import AudioWaveformRibbon
+from scribe_dictation.ui.xp_theme import (
+    THEME_DEFAULT,
+    THEME_LABELS,
+    apply_theme,
+)
 from scribe_dictation.ui.vocabulary_dialog import VocabularyDialog
 from scribe_dictation.transcribe.vocabulary import diff_corrections
 from scribe_dictation.ui.voice_lab_dialog import VoiceLabDialog
@@ -132,6 +137,7 @@ SETTINGS_SHOW_MENU_BAR = "show_menu_bar"
 SETTINGS_FORMATTING_MODE = "formatting_mode"
 SETTINGS_LANGUAGE = "transcription_language"
 SETTINGS_TASK = "transcription_task"
+SETTINGS_THEME = "app_theme"
 DEFAULT_HISTORY_LIMIT = 1
 SUPPORTED_HISTORY_LIMITS = [
     (1, "1 transcription (Default)"),
@@ -1024,6 +1030,12 @@ class ScribeDictationWindow(QMainWindow):
     def _toggle_menu_bar(self):
         self._set_menu_bar_visible(not self._is_menu_bar_visible())
 
+    def _set_theme(self, theme: str):
+        self.settings.setValue(SETTINGS_THEME, theme)
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, theme)
+
     def _update_app_icon(self):
         from PySide6.QtGui import QIcon
 
@@ -1320,6 +1332,23 @@ class ScribeDictationWindow(QMainWindow):
         self._toggle_menu_action.setChecked(self._is_menu_bar_visible())
         self._toggle_menu_action.triggered.connect(self._toggle_menu_bar)
         view_menu.addAction(self._toggle_menu_action)
+
+        view_menu.addSeparator()
+        theme_menu = view_menu.addMenu("&Theme")
+        self._theme_action_group = QActionGroup(self)
+        self._theme_action_group.setExclusive(True)
+        current_theme = self.settings.value(SETTINGS_THEME, THEME_DEFAULT)
+
+        for theme_key, theme_label in THEME_LABELS.items():
+            action = QAction(theme_label, self)
+            action.setCheckable(True)
+            if theme_key == current_theme:
+                action.setChecked(True)
+            action.triggered.connect(
+                lambda checked=False, t=theme_key: self._set_theme(t)
+            )
+            self._theme_action_group.addAction(action)
+            theme_menu.addAction(action)
 
         # History Menu
         history_menu = menu_bar.addMenu("&History")
@@ -2254,6 +2283,9 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORGANIZATION)
+
+    saved_theme = QSettings(ORGANIZATION, APP_NAME).value(SETTINGS_THEME, THEME_DEFAULT)
+    apply_theme(app, saved_theme)
 
     from scribe_dictation.ui.onboarding_wizard import (
         OnboardingWizard,

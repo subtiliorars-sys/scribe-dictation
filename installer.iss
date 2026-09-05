@@ -1,6 +1,6 @@
 ; Inno Setup Installer Script for Privacy Scribe
 #define MyAppName "Privacy Scribe"
-#define MyAppVersion "0.4.3"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "Privacy Scribe"
 #define MyAppURL "https://privacyscribe.app"
 #define MyAppExeName "PrivacyScribe.exe"

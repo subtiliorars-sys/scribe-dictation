@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-CURRENT_VERSION = "0.4.3"
+CURRENT_VERSION = "1.2.0"
 GITHUB_REPO = "subtiliorars-sys/scribe-dictation"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
